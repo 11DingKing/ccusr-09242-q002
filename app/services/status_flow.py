@@ -136,23 +136,6 @@ def transition_project_status(
     return project
 
 
-def trigger_status_after_intent(
-    db: Session,
-    project: models.Project,
-    operator: Optional[str] = None,
-) -> None:
-    if project.status != ProjectStatus.ATTRACTING_INVESTMENT:
-        return
-    transition_project_status(
-        db,
-        project=project,
-        to_status=ProjectStatus.NEGOTIATING,
-        operator=operator,
-        reason="收到合作意向，转入洽谈阶段",
-        skip_validation=True,
-    )
-
-
 def trigger_status_after_approval(
     db: Session,
     project: models.Project,

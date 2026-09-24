@@ -109,7 +109,10 @@ def update_intent(
     intent_in: schemas.CooperationIntentUpdate,
     db: Session = Depends(get_db),
 ):
-    updated = crud.update_intent(db, intent_id=intent_id, obj_in=intent_in)
+    try:
+        updated = crud.update_intent(db, intent_id=intent_id, obj_in=intent_in)
+    except ValueError as e:
+        raise HTTPException(status_code=HTTPStatus.CONFLICT, detail=str(e))
     if not updated:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND,
@@ -134,7 +137,10 @@ def create_negotiation(
             status_code=HTTPStatus.NOT_FOUND,
             detail=ERROR_NOT_FOUND["intent"],
         )
-    return crud.create_negotiation(db, intent_id=intent_id, obj_in=neg_in)
+    try:
+        return crud.create_negotiation(db, intent_id=intent_id, obj_in=neg_in)
+    except ValueError as e:
+        raise HTTPException(status_code=HTTPStatus.CONFLICT, detail=str(e))
 
 
 @router.get(

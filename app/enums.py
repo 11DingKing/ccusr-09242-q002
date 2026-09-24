@@ -41,10 +41,32 @@ class ParkType(str, Enum):
 class IntentStatus(str, Enum):
     SUBMITTED = "已提交"
     REVIEWING = "评审中"
+    RETURNED = "已退回"
     IN_DISCUSSION = "洽谈中"
     ACCEPTED = "已采纳"
     REJECTED = "已拒绝"
     WITHDRAWN = "已撤回"
+
+
+class ReviewRole(str, Enum):
+    """分阶段审批的固定角色：投资、法务、园区运营并行审阅。"""
+
+    INVESTMENT = "投资"
+    LEGAL = "法务"
+    PARK_OPERATION = "园区运营"
+
+
+class ReviewDecision(str, Enum):
+    APPROVED = "通过"
+    RETURNED = "退回补件"
+    REJECTED = "拒绝"
+
+
+class ReviewRoundStatus(str, Enum):
+    IN_REVIEW = "评审中"
+    RETURNED = "已退回"
+    REJECTED = "已拒绝"
+    PASSED = "已通过"
 
 
 class MilestoneStatus(str, Enum):

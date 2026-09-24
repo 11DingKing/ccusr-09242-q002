@@ -8,6 +8,7 @@ from sqlalchemy import (
     Text,
     Date,
     Enum as SAEnum,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -19,6 +20,9 @@ from .enums import (
     ProjectStatus,
     ParkType,
     IntentStatus,
+    ReviewRole,
+    ReviewDecision,
+    ReviewRoundStatus,
     MilestoneStatus,
     MilestoneType,
     FollowUpStatus,
@@ -203,6 +207,8 @@ class CooperationIntent(Base):
         default=IntentStatus.SUBMITTED,
         index=True,
     )
+    # 分阶段审批所处轮次：0 表示尚未开启审批，每次补件后重审 +1。
+    review_stage = Column(Integer, nullable=False, default=0)
     cooperation_mode = Column(String(128))
     proposed_investment_10k = Column(Float)
     proposed_capacity_tonnes = Column(Float)
@@ -233,6 +239,117 @@ class CooperationIntent(Base):
         cascade="all, delete-orphan",
         order_by="NegotiationRecord.round, NegotiationRecord.held_at",
     )
+    review_config = relationship(
+        "IntentReviewConfig",
+        back_populates="intent",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    review_rounds = relationship(
+        "IntentReviewRound",
+        back_populates="intent",
+        cascade="all, delete-orphan",
+        order_by="IntentReviewRound.round_no",
+    )
+    review_actions = relationship(
+        "IntentReviewAction",
+        back_populates="intent",
+        cascade="all, delete-orphan",
+        order_by="IntentReviewAction.created_at",
+    )
+
+
+class IntentReviewConfig(Base):
+    """意向的必审角色配置（快照由各轮次自行保存，配置变更不改写历史）。"""
+
+    __tablename__ = "intent_review_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    intent_id = Column(
+        Integer,
+        ForeignKey("cooperation_intents.id"),
+        nullable=False,
+        unique=True,
+    )
+    required_roles = Column(String(256), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    intent = relationship("CooperationIntent", back_populates="review_config")
+
+
+class IntentReviewRound(Base):
+    """一轮并行审批：补件后重审会产生新的一轮，历史轮次原样保留。"""
+
+    __tablename__ = "intent_review_rounds"
+    __table_args__ = (
+        # 同一意向内轮次号唯一，并发重开/补件时由数据库拒绝重复插入。
+        # SQLite 不支持行级 SELECT FOR UPDATE，唯一约束是并发冲突的最终防线。
+        UniqueConstraint("intent_id", "round_no", name="uq_review_round_intent_round"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    intent_id = Column(
+        Integer,
+        ForeignKey("cooperation_intents.id"),
+        nullable=False,
+        index=True,
+    )
+    round_no = Column(Integer, nullable=False)
+    status = Column(
+        SAEnum(ReviewRoundStatus),
+        nullable=False,
+        default=ReviewRoundStatus.IN_REVIEW,
+        index=True,
+    )
+    # 本轮开启时的必审角色快照（逗号分隔），配置后续变化不影响本轮判定。
+    required_roles_snapshot = Column(String(256), nullable=False)
+    # 乐观锁版本号，每次状态推进 +1，并发写入用它给出可解释的冲突结果。
+    version = Column(Integer, nullable=False, default=1)
+    started_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime)
+
+    intent = relationship("CooperationIntent", back_populates="review_rounds")
+    actions = relationship(
+        "IntentReviewAction",
+        back_populates="round",
+        cascade="all, delete-orphan",
+        order_by="IntentReviewAction.created_at",
+    )
+
+
+class IntentReviewAction(Base):
+    """某个角色在某一轮中的独立意见、附件摘要与时间戳。"""
+
+    __tablename__ = "intent_review_actions"
+    __table_args__ = (
+        # 每轮每个角色仅允许一条意见，并发重复提交由数据库唯一约束兜底。
+        UniqueConstraint("round_id", "role", name="uq_review_action_round_role"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    intent_id = Column(
+        Integer,
+        ForeignKey("cooperation_intents.id"),
+        nullable=False,
+        index=True,
+    )
+    round_id = Column(
+        Integer,
+        ForeignKey("intent_review_rounds.id"),
+        nullable=False,
+        index=True,
+    )
+    role = Column(SAEnum(ReviewRole), nullable=False, index=True)
+    decision = Column(SAEnum(ReviewDecision), nullable=False)
+    comment = Column(Text)
+    attachment_summary = Column(Text)
+    reviewer = Column(String(64))
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    intent = relationship("CooperationIntent", back_populates="review_actions")
+    round = relationship("IntentReviewRound", back_populates="actions")
 
 
 class NegotiationRecord(Base):

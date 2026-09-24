@@ -15,7 +15,6 @@ from .enums import (
 from .services.status_flow import (
     validate_status_transition,
     transition_project_status,
-    trigger_status_after_intent,
     trigger_status_after_approval,
     StatusTransitionError,
 )
@@ -302,13 +301,9 @@ def list_intents(
 def create_intent(db: Session, obj_in: schemas.CooperationIntentCreate):
     db_intent = models.CooperationIntent(**obj_in.model_dump())
     db.add(db_intent)
-    project = (
-        db.query(models.Project)
-        .filter(models.Project.id == obj_in.project_id)
-        .first()
-    )
-    if project:
-        trigger_status_after_intent(db, project)
+    # 注意：提交意向不再自动把项目转入洽谈中。项目须在合作意向通过
+    # 投资/法务/园区运营的分阶段审批后，才由审批服务统一推进
+    # （招商中 → 洽谈中）。
     db.commit()
     db.refresh(db_intent)
     return get_intent(db, db_intent.id)
@@ -320,11 +315,13 @@ def update_intent(db: Session, intent_id: int, obj_in: schemas.CooperationIntent
         return None
     update_data = obj_in.model_dump(exclude_unset=True)
     if "status" in update_data and update_data["status"] != db_intent.status:
-        if (
-            update_data["status"] in [IntentStatus.REVIEWING, IntentStatus.IN_DISCUSSION]
-            and db_intent.reviewed_at is None
-        ):
-            db_intent.reviewed_at = datetime.utcnow()
+        # 意向状态由分阶段审批流程统一驱动，禁止通过通用更新接口直接改写，
+        # 避免绕过「必审角色全部通过才进入洽谈」的规则。
+        raise ValueError(
+            "合作意向状态需通过分阶段审批接口变更（开启审批/提交意见/补件重审），"
+            "不支持直接修改状态"
+        )
+    update_data.pop("status", None)
     for field, value in update_data.items():
         setattr(db_intent, field, value)
     db.commit()
@@ -335,13 +332,16 @@ def update_intent(db: Session, intent_id: int, obj_in: schemas.CooperationIntent
 def create_negotiation(
     db: Session, intent_id: int, obj_in: schemas.NegotiationRecordCreate
 ):
+    intent = db.query(models.CooperationIntent).filter(models.CooperationIntent.id == intent_id).first()
+    if not intent:
+        return None
+    if intent.status != IntentStatus.IN_DISCUSSION:
+        raise ValueError(
+            f"意向当前状态为「{intent.status.value}」，须在分阶段审批全部通过、"
+            "进入洽谈阶段后才能登记洽谈记录"
+        )
     db_neg = models.NegotiationRecord(intent_id=intent_id, **obj_in.model_dump())
     db.add(db_neg)
-    intent = db.query(models.CooperationIntent).filter(models.CooperationIntent.id == intent_id).first()
-    if intent and intent.status in [IntentStatus.SUBMITTED, IntentStatus.REVIEWING]:
-        intent.status = IntentStatus.IN_DISCUSSION
-        if intent.reviewed_at is None:
-            intent.reviewed_at = datetime.utcnow()
     db.commit()
     db.refresh(db_neg)
     return db_neg

@@ -3,9 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .database import Base, engine
-from .routers import entities, parks, projects, workflow, statistics, capacity
+from .migrations import run_startup_migrations
+from .routers import entities, parks, projects, workflow, reviews, statistics, capacity
 
 Base.metadata.create_all(bind=engine)
+# 历史库增量迁移（幂等）：补齐 create_all 无法处理的新增列。
+run_startup_migrations()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -44,5 +47,6 @@ app.include_router(entities.router, prefix=prefix)
 app.include_router(parks.router, prefix=prefix)
 app.include_router(projects.router, prefix=prefix)
 app.include_router(workflow.router, prefix=prefix)
+app.include_router(reviews.router, prefix=prefix)
 app.include_router(statistics.router, prefix=prefix)
 app.include_router(capacity.router, prefix=prefix)

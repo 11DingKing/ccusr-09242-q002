@@ -8,6 +8,9 @@ from .enums import (
     ProjectStatus,
     ParkType,
     IntentStatus,
+    ReviewRole,
+    ReviewDecision,
+    ReviewRoundStatus,
     MilestoneStatus,
     MilestoneType,
     FollowUpStatus,
@@ -332,6 +335,7 @@ class CooperationIntentListItem(BaseModel):
 class CooperationIntent(CooperationIntentBase):
     id: int
     status: IntentStatus
+    review_stage: int = 0
     reviewer: Optional[str] = None
     review_comments: Optional[str] = None
     submitted_at: datetime
@@ -343,6 +347,100 @@ class CooperationIntent(CooperationIntentBase):
     negotiations: List[NegotiationRecord] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------------------------------------------------------------------
+# 分阶段审批
+# ---------------------------------------------------------------------------
+
+class ReviewConfigUpdate(BaseModel):
+    required_roles: List[ReviewRole] = Field(
+        ..., min_length=1, description="必审角色，至少一个"
+    )
+    expected_version: Optional[int] = Field(
+        None, description="乐观锁：客户端看到的配置版本，缺省表示不校验"
+    )
+
+
+class ReviewConfigView(BaseModel):
+    configured: bool
+    required_roles: List[ReviewRole]
+    version: Optional[int] = None
+    updated_at: Optional[datetime] = None
+    applies_from_round: int
+
+
+class ReviewDecisionCreate(BaseModel):
+    role: ReviewRole
+    decision: ReviewDecision
+    comment: Optional[str] = None
+    attachment_summary: Optional[str] = Field(
+        None, description="附件摘要（文件名/页数/要点），不存储附件本身"
+    )
+    reviewer: Optional[str] = None
+    expected_round: Optional[int] = Field(
+        None, description="乐观锁：客户端针对的轮次号，防止补件开新轮后误写旧轮"
+    )
+    expected_version: Optional[int] = Field(
+        None, description="乐观锁：客户端看到的轮次版本，防止并发覆盖"
+    )
+
+
+class ReviewActionView(BaseModel):
+    role: ReviewRole
+    decision: ReviewDecision
+    reviewer: Optional[str] = None
+    comment: Optional[str] = None
+    attachment_summary: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReviewRoundView(BaseModel):
+    round_no: int
+    status: ReviewRoundStatus
+    required_roles: List[ReviewRole]
+    version: int
+    started_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    pending_roles: List[ReviewRole] = Field(default_factory=list)
+    actions: List[ReviewActionView] = Field(default_factory=list)
+
+
+class ReviewTrace(BaseModel):
+    intent_id: int
+    intent_status: IntentStatus
+    review_stage: int
+    active_round_no: Optional[int] = None
+    config: ReviewConfigView
+    rounds: List[ReviewRoundView] = Field(default_factory=list)
+
+
+class ReviewTodoItem(BaseModel):
+    intent_id: int
+    round_no: int
+    role: ReviewRole
+    project_id: int
+    project_name: Optional[str] = None
+    submitter_id: int
+    submitter_name: Optional[str] = None
+    round_started_at: Optional[datetime] = None
+    submitted_at: datetime
+    required_roles: List[ReviewRole] = Field(default_factory=list)
+    decided_roles: List[ReviewRole] = Field(default_factory=list)
+    pending_roles: List[ReviewRole] = Field(default_factory=list)
+
+
+class ReviewResubmitRequest(BaseModel):
+    # 补件内容：可修改的意向字段；均为可选，至少更新附件摘要说明即可重开
+    cooperation_mode: Optional[str] = None
+    proposed_investment_10k: Optional[float] = None
+    proposed_capacity_tonnes: Optional[float] = None
+    cooperation_content: Optional[str] = None
+    expected_timeline: Optional[str] = None
+    requirements: Optional[str] = None
+    submitter_comments: Optional[str] = None
 
 
 class ProjectApprovalBase(BaseModel):
