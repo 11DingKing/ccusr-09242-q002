@@ -47,6 +47,34 @@ class IntentStatus(str, Enum):
     WITHDRAWN = "已撤回"
 
 
+class ReviewRole(str, Enum):
+    """分阶段审批角色：投资、法务、园区运营并行审阅。"""
+
+    INVESTMENT = "投资"
+    LEGAL = "法务"
+    PARK_OPERATIONS = "园区运营"
+
+
+class ReviewDecision(str, Enum):
+    APPROVED = "通过"
+    RETURNED = "补件退回"
+    REJECTED = "拒绝"
+
+
+class ReviewRoundStatus(str, Enum):
+    PENDING = "待审批"
+    RETURNED = "已退回"
+    REJECTED = "已拒绝"
+    ALL_APPROVED = "全部通过"
+
+
+class ReviewStageStatus(str, Enum):
+    PENDING = "待审"
+    APPROVED = "已通过"
+    RETURNED = "已退回"
+    REJECTED = "已拒绝"
+
+
 class MilestoneStatus(str, Enum):
     NOT_STARTED = "未启动"
     IN_PROGRESS = "进行中"

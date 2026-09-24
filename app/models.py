@@ -7,6 +7,8 @@ from sqlalchemy import (
     ForeignKey,
     Text,
     Date,
+    Boolean,
+    UniqueConstraint,
     Enum as SAEnum,
 )
 from sqlalchemy.orm import relationship
@@ -23,6 +25,9 @@ from .enums import (
     MilestoneType,
     FollowUpStatus,
     FollowUpPriority,
+    ReviewRole,
+    ReviewDecision,
+    ReviewRoundStatus,
 )
 
 
@@ -233,6 +238,18 @@ class CooperationIntent(Base):
         cascade="all, delete-orphan",
         order_by="NegotiationRecord.round, NegotiationRecord.held_at",
     )
+    review_rounds = relationship(
+        "ApprovalRound",
+        back_populates="intent",
+        cascade="all, delete-orphan",
+        order_by="ApprovalRound.round_no",
+    )
+    review_events = relationship(
+        "ApprovalEvent",
+        back_populates="intent",
+        cascade="all, delete-orphan",
+        order_by="ApprovalEvent.id",
+    )
 
 
 class NegotiationRecord(Base):
@@ -362,3 +379,128 @@ class CapacityFollowUp(Base):
 
     project = relationship("Project", back_populates="capacity_follow_ups")
     report = relationship("MonthlyCapacityReport")
+
+
+class ApprovalConfig(Base):
+    """分阶段审批配置。同一时刻只有一条生效配置（is_active=True）。
+
+    配置变化通过 version 自增留痕；开启新一轮审批时把当版必审角色
+    快照到 ApprovalRound，之后配置再改动不影响进行中/已结束的轮次。
+    """
+
+    __tablename__ = "approval_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    version = Column(Integer, nullable=False, unique=True)
+    required_roles = Column(String(512), nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    change_remark = Column(String(512))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(64))
+
+
+class ApprovalRound(Base):
+    """意向的一轮分阶段审批。required_roles 是开启轮次时的配置快照。"""
+
+    __tablename__ = "approval_rounds"
+    __table_args__ = (
+        UniqueConstraint("intent_id", "round_no", name="uq_approval_round_intent_round"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    intent_id = Column(
+        Integer, ForeignKey("cooperation_intents.id"), nullable=False, index=True
+    )
+    round_no = Column(Integer, nullable=False)
+    status = Column(
+        SAEnum(ReviewRoundStatus),
+        nullable=False,
+        default=ReviewRoundStatus.PENDING,
+        index=True,
+    )
+    required_roles = Column(String(512), nullable=False)
+    config_version = Column(Integer, nullable=False)
+    opened_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime)
+    close_reason = Column(String(512))
+
+    intent = relationship("CooperationIntent", back_populates="review_rounds")
+    opinions = relationship(
+        "ApprovalOpinion",
+        back_populates="round",
+        cascade="all, delete-orphan",
+        order_by="ApprovalOpinion.submitted_at",
+    )
+
+
+class ApprovalOpinion(Base):
+    """某个角色在某一轮中的独立意见。提交后不可变（重复提交走并发冲突）。
+
+    并发安全不依赖应用锁：写事务统一 BEGIN IMMEDIATE 串行化，
+    (round_id, role) 唯一约束兜底，败者重试后读到胜者结果并得到
+    可解释的 REVIEW_DUPLICATE 冲突（见 services/approvals.py）。
+    """
+
+    __tablename__ = "approval_opinions"
+    __table_args__ = (
+        UniqueConstraint(
+            "round_id", "role", name="uq_approval_opinion_round_role"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    round_id = Column(
+        Integer, ForeignKey("approval_rounds.id"), nullable=False, index=True
+    )
+    role = Column(SAEnum(ReviewRole), nullable=False, index=True)
+    decision = Column(SAEnum(ReviewDecision), nullable=False)
+    comment = Column(Text)
+    attachment_summary = Column(Text)
+    reviewer = Column(String(64))
+    submitted_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    round = relationship("ApprovalRound", back_populates="opinions")
+    attachments = relationship(
+        "ApprovalAttachment",
+        back_populates="opinion",
+        cascade="all, delete-orphan",
+        order_by="ApprovalAttachment.id",
+    )
+
+
+class ApprovalAttachment(Base):
+    """意见携带的附件摘要（名称、大小、摘要说明），不保存文件本体。"""
+
+    __tablename__ = "approval_attachments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    opinion_id = Column(
+        Integer, ForeignKey("approval_opinions.id"), nullable=False, index=True
+    )
+    file_name = Column(String(256), nullable=False)
+    file_size_bytes = Column(Integer)
+    digest = Column(String(128))
+    summary = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    opinion = relationship("ApprovalOpinion", back_populates="attachments")
+
+
+class ApprovalEvent(Base):
+    """审批轨迹事件流：开轮/意见/退回/全通过/关闭均追加一条，只增不改。"""
+
+    __tablename__ = "approval_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    intent_id = Column(
+        Integer, ForeignKey("cooperation_intents.id"), nullable=False, index=True
+    )
+    round_no = Column(Integer)
+    event_type = Column(String(32), nullable=False)
+    role = Column(SAEnum(ReviewRole))
+    decision = Column(SAEnum(ReviewDecision))
+    detail = Column(Text)
+    operator = Column(String(64))
+    occurred_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    intent = relationship("CooperationIntent", back_populates="review_events")

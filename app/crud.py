@@ -1,6 +1,5 @@
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List
-from datetime import datetime
 
 from . import models, schemas
 from .enums import (
@@ -15,10 +14,10 @@ from .enums import (
 from .services.status_flow import (
     validate_status_transition,
     transition_project_status,
-    trigger_status_after_intent,
     trigger_status_after_approval,
     StatusTransitionError,
 )
+from .services import approvals as approval_svc
 from .services.milestones import (
     process_milestone_update,
     build_default_milestones,
@@ -302,13 +301,6 @@ def list_intents(
 def create_intent(db: Session, obj_in: schemas.CooperationIntentCreate):
     db_intent = models.CooperationIntent(**obj_in.model_dump())
     db.add(db_intent)
-    project = (
-        db.query(models.Project)
-        .filter(models.Project.id == obj_in.project_id)
-        .first()
-    )
-    if project:
-        trigger_status_after_intent(db, project)
     db.commit()
     db.refresh(db_intent)
     return get_intent(db, db_intent.id)
@@ -320,11 +312,14 @@ def update_intent(db: Session, intent_id: int, obj_in: schemas.CooperationIntent
         return None
     update_data = obj_in.model_dump(exclude_unset=True)
     if "status" in update_data and update_data["status"] != db_intent.status:
-        if (
-            update_data["status"] in [IntentStatus.REVIEWING, IntentStatus.IN_DISCUSSION]
-            and db_intent.reviewed_at is None
-        ):
-            db_intent.reviewed_at = datetime.utcnow()
+        # 意向审批状态由分阶段审批驱动（发起审批→评审中，全通过→洽谈中，
+        # 退回/拒绝各有归宿），不再允许通过通用编辑接口直接改写，
+        # 以免绕过必审角色全部通过的准入条件。
+        raise ValueError(
+            "意向审批状态不可直接修改，请使用分阶段审批接口"
+            "（发起审批/提交角色意见/补件重审）推进"
+        )
+    update_data.pop("status", None)
     for field, value in update_data.items():
         setattr(db_intent, field, value)
     db.commit()
@@ -335,13 +330,11 @@ def update_intent(db: Session, intent_id: int, obj_in: schemas.CooperationIntent
 def create_negotiation(
     db: Session, intent_id: int, obj_in: schemas.NegotiationRecordCreate
 ):
+    # 准入：只有分阶段审批全部通过（或上线前已在洽谈的历史意向）才可登记洽谈；
+    # 退回待补件、整单拒绝、仍有角色未审时一律阻止推进。
+    approval_svc.ensure_negotiation_allowed(db, intent_id)
     db_neg = models.NegotiationRecord(intent_id=intent_id, **obj_in.model_dump())
     db.add(db_neg)
-    intent = db.query(models.CooperationIntent).filter(models.CooperationIntent.id == intent_id).first()
-    if intent and intent.status in [IntentStatus.SUBMITTED, IntentStatus.REVIEWING]:
-        intent.status = IntentStatus.IN_DISCUSSION
-        if intent.reviewed_at is None:
-            intent.reviewed_at = datetime.utcnow()
     db.commit()
     db.refresh(db_neg)
     return db_neg

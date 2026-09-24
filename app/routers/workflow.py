@@ -13,6 +13,7 @@ from ..errors import (
     ERROR_OPERATION_FAILED,
     fmt,
 )
+from ..services.approvals import ApprovalFlowError
 
 router = APIRouter(prefix="/workflow", tags=["业务流转：意向-洽谈-立项-里程碑"])
 
@@ -109,7 +110,17 @@ def update_intent(
     intent_in: schemas.CooperationIntentUpdate,
     db: Session = Depends(get_db),
 ):
-    updated = crud.update_intent(db, intent_id=intent_id, obj_in=intent_in)
+    try:
+        updated = crud.update_intent(db, intent_id=intent_id, obj_in=intent_in)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail={
+                "code": "REVIEW_STATUS_DRIVEN_BY_APPROVAL",
+                "message": str(e),
+                "context": None,
+            },
+        )
     if not updated:
         raise HTTPException(
             status_code=HTTPStatus.NOT_FOUND,
@@ -134,7 +145,13 @@ def create_negotiation(
             status_code=HTTPStatus.NOT_FOUND,
             detail=ERROR_NOT_FOUND["intent"],
         )
-    return crud.create_negotiation(db, intent_id=intent_id, obj_in=neg_in)
+    try:
+        return crud.create_negotiation(db, intent_id=intent_id, obj_in=neg_in)
+    except ApprovalFlowError as e:
+        raise HTTPException(
+            status_code=e.status_code,
+            detail={"code": e.code, "message": e.message, "context": e.context},
+        )
 
 
 @router.get(

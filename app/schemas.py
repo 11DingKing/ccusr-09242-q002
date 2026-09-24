@@ -1,6 +1,6 @@
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, BeforeValidator
 from datetime import datetime, date
-from typing import Optional, List
+from typing import Optional, List, Annotated
 
 from .enums import (
     Region,
@@ -12,7 +12,33 @@ from .enums import (
     MilestoneType,
     FollowUpStatus,
     FollowUpPriority,
+    ReviewRole,
+    ReviewDecision,
+    ReviewRoundStatus,
+    ReviewStageStatus,
 )
+
+
+def _enum_by_name_or_value(enum_cls):
+    """入站枚举宽松解析：同时接受枚举中文名（value）与英文常量名（name）。"""
+
+    def _parse(value):
+        if isinstance(value, enum_cls):
+            return value
+        if isinstance(value, str):
+            found = next((m for m in enum_cls if m.value == value), None)
+            if found is not None:
+                return found
+            key = value.strip().upper()
+            if key in enum_cls.__members__:
+                return enum_cls[key]
+        return value
+
+    return BeforeValidator(_parse)
+
+
+RoleInput = Annotated[ReviewRole, _enum_by_name_or_value(ReviewRole)]
+DecisionInput = Annotated[ReviewDecision, _enum_by_name_or_value(ReviewDecision)]
 
 
 class EntityCapabilityBase(BaseModel):
@@ -583,3 +609,150 @@ class CapacityOverviewStatistics(BaseModel):
 
 
 Project.model_rebuild()
+
+
+# ---------------------------------------------------------------------------
+# 分阶段审批
+# ---------------------------------------------------------------------------
+
+class ApprovalAttachmentBase(BaseModel):
+    file_name: str = Field(..., min_length=1, description="附件名称")
+    file_size_bytes: Optional[int] = Field(None, ge=0)
+    digest: Optional[str] = Field(None, max_length=128, description="附件摘要指纹")
+    summary: Optional[str] = Field(None, description="附件内容摘要说明")
+
+
+class ApprovalAttachmentCreate(ApprovalAttachmentBase):
+    pass
+
+
+class ApprovalAttachment(ApprovalAttachmentBase):
+    id: int
+    opinion_id: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApprovalOpinionSubmit(BaseModel):
+    decision: DecisionInput = Field(..., description="通过 / 补件退回 / 拒绝")
+    comment: Optional[str] = Field(None, description="角色独立意见")
+    attachment_summary: Optional[str] = Field(
+        None, description="附件总体摘要（文本，区别于每份附件的 summary）"
+    )
+    attachments: List[ApprovalAttachmentCreate] = Field(default_factory=list)
+    reviewer: Optional[str] = Field(None, max_length=64)
+
+
+class ReviewRoundOpenRequest(BaseModel):
+    resubmit_comment: Optional[str] = Field(
+        None,
+        description="非首轮时必填：本次补件补充了哪些材料/说明",
+    )
+    operator: Optional[str] = Field(None, max_length=64)
+
+
+class ApprovalConfigUpsert(BaseModel):
+    required_roles: List[RoleInput] = Field(
+        ...,
+        min_length=1,
+        description="必审角色列表，保存时按固定顺序去重",
+    )
+    change_remark: Optional[str] = Field(None, description="本次配置变更说明")
+    created_by: Optional[str] = Field(None, max_length=64)
+
+
+class ApprovalConfigOut(BaseModel):
+    id: int
+    version: int
+    required_roles: List[ReviewRole]
+    is_active: bool
+    change_remark: Optional[str] = None
+    created_by: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReviewStageOut(BaseModel):
+    role: ReviewRole
+    status: ReviewStageStatus
+
+
+class ApprovalOpinionOut(BaseModel):
+    id: int
+    role: ReviewRole
+    decision: ReviewDecision
+    comment: Optional[str] = None
+    attachment_summary: Optional[str] = None
+    reviewer: Optional[str] = None
+    submitted_at: datetime
+    attachments: List[ApprovalAttachment] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReviewRoundOut(BaseModel):
+    round_no: int
+    status: ReviewRoundStatus
+    config_version: int
+    required_roles: List[ReviewRole]
+    opened_at: datetime
+    closed_at: Optional[datetime] = None
+    close_reason: Optional[str] = None
+    stages: List[ReviewStageOut] = Field(default_factory=list)
+    opinions: List[ApprovalOpinionOut] = Field(default_factory=list)
+
+
+class ReviewTodoItem(BaseModel):
+    intent_id: int
+    intent_status: IntentStatus
+    project_id: int
+    project_name: Optional[str] = None
+    submitter_id: int
+    submitter_name: Optional[str] = None
+    round_no: int
+    config_version: int
+    required_roles: List[ReviewRole]
+    finished_roles: List[ReviewRole] = Field(default_factory=list)
+    pending_roles: List[ReviewRole] = Field(default_factory=list)
+    opened_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ApprovalEventOut(BaseModel):
+    id: int
+    round_no: Optional[int] = None
+    event_type: str
+    role: Optional[ReviewRole] = None
+    decision: Optional[ReviewDecision] = None
+    detail: Optional[str] = None
+    operator: Optional[str] = None
+    occurred_at: datetime
+
+
+class ReviewTraceResponse(BaseModel):
+    intent_id: int
+    intent_status: IntentStatus
+    project_id: int
+    current_config_version: Optional[int] = None
+    current_required_roles: List[ReviewRole] = Field(default_factory=list)
+    rounds: List[ReviewRoundOut] = Field(default_factory=list)
+    events: List[ApprovalEventOut] = Field(default_factory=list)
+
+
+class SubmitOpinionResult(BaseModel):
+    opinion_id: int
+    round_no: int
+    round_status: ReviewRoundStatus
+    intent_status: IntentStatus
+    pending_roles: List[ReviewRole] = Field(default_factory=list)
+    finished_roles: List[ReviewRole] = Field(default_factory=list)
+
+
+class OpenRoundResult(BaseModel):
+    intent_id: int
+    round_no: int
+    status: ReviewRoundStatus = ReviewRoundStatus.PENDING
+    config_version: int
+    required_roles: List[ReviewRole] = Field(default_factory=list)
